@@ -1,122 +1,97 @@
+/*
+ * PingPongPipe.c
+ *
+ *  Created on: 28 mag 2020
+ *      Author: davide
+ *
+ *      https://github.com/marcotessarotto/esercizio-2020-05-22-ping-pong
+ */
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
+#include <semaphore.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-#include <sys/stat.h>
-#include <fcntl.h>
+#include <errno.h>
 #include <sys/mman.h>
 
-#include <errno.h>
-
-/*
-Scrivere un programma che realizza un "ping-pong" tra due processi utilizzando una coppia di pipe,
-una per ogni direzione.
-
-Il contatore (di tipo int) viene incrementato ad ogni ping ed ad ogni pong e viene trasmesso attraverso la pipe.
-
-Quanto il contatore raggiunge il valore MAX_VALUE il programma termina.
-
-proc_padre manda a proc_figlio il valore 0 attraverso pipeA.
-proc_figlio riceve il valore 0, lo incrementa (=1) e lo manda a proc_padre attraverso pipeB.
-proc_padre riceve il valore 1, lo incrementa (=2) e lo manda a proc_figlio attraverso pipeA.
-proc_figlio riceve il valore 2 .....
-
-fino a MAX_VALUE, quando termina il programma.
-(il primo processo che arriva a MAX_VALUE fa terminare il programma).
-
-
- */
+#define CHECK_ERR_MMAP(a,msg) {if ((a) == MAP_FAILED) { perror((msg)); exit(EXIT_FAILURE); } }
 
 #define MAX_VALUE 1000000
 
-#define CHECK_ERR(a,msg) {if ((a) == -1) { perror((msg)); exit(EXIT_FAILURE); } }
+int parent_pipe_fd[2];
+int child_pipe_fd[2];
+int buf; //buf utilizzato da entrambi i processi
 
-int pipeA[2];
-int pipeB[2];
-// proc_padre legge da pipeB, scrive su pipeA
-// proc_figlio legge da pipeA, scrive su pipeB
+void child_process() {
 
-int main() {
+	close(parent_pipe_fd[1]); // chiudiamo l'estremità di scrittura della pipe, non ci serve
+	int byteRead;
 
-	int res;
-	int counter = 0;
+	while (1) {
 
-	res = pipe(pipeA);
-	CHECK_ERR(res, "pipe")
-
-	res = pipe(pipeB);
-	CHECK_ERR(res, "pipe")
-
-	switch(fork()) {
-		case 0: // child process
-
-			// proc_figlio legge da pipeA, scrive su pipeB
-			close(pipeA[1]);
-			close(pipeB[0]);
-
-			while (counter < MAX_VALUE) {
-
-				res = read(pipeA[0], &counter, sizeof(counter));
-				CHECK_ERR(res,"read")
-
-				if (res == 0) {
-					printf("[child] EOF su pipeA\n");
-					break;
-				}
-
-				printf("[child] dopo read: counter=%d\n", counter);
-
-				counter++;
-
-				printf("[child] prima di write: counter=%d\n", counter);
-
-				res = write(pipeB[1], &counter, sizeof(counter));
-				CHECK_ERR(res,"write")
-			}
-
-			printf("[child] fuori da while: counter=%d\n", counter);
-
-			printf("[child] bye\n");
-
-			exit(EXIT_SUCCESS);
-		case -1:
-			perror("fork()");
+		byteRead = read(parent_pipe_fd[0], &buf, sizeof(int));
+		if (byteRead == -1) {
+			perror("errore in read");
 			exit(EXIT_FAILURE);
-		default:
-			;
-	}
-
-	// proc_padre legge da pipeB, scrive su pipeA
-	close(pipeA[0]);
-	close(pipeB[1]);
-
-	while (counter < MAX_VALUE) {
-
-		printf("[parent] prima di write: counter=%d\n", counter);
-
-		res = write(pipeA[1], &counter, sizeof(counter));
-		CHECK_ERR(res,"write")
-
-		res = read(pipeB[0], &counter, sizeof(counter));
-		CHECK_ERR(res,"read")
-
-		if (res == 0) {
-			printf("[parent] EOF su pipeA\n");
-			break;
 		}
+		if (buf > MAX_VALUE - 1) {
+			printf("Finished! value = %d\n", buf);
+			write(child_pipe_fd[1], &buf, sizeof(int));
+			exit(EXIT_SUCCESS);
+		}
+		buf++;
+		write(child_pipe_fd[1], &buf, sizeof(int));
 
-		printf("[parent] dopo read: counter=%d\n", counter);
-
-		counter++;
 	}
 
-	printf("[parent] fuori da while: counter=%d\n", counter);
+}
 
-	printf("[parent] bye\n");
+int main(int argc, char *argv[]) {
 
+	if (pipe(parent_pipe_fd) == -1) {
+		perror("problema con pipe");
 
-	return 0;
+		exit(EXIT_FAILURE);
+	}
+
+	if (pipe(child_pipe_fd) == -1) {
+		perror("problema con pipe");
+
+		exit(EXIT_FAILURE);
+	}
+
+	switch (fork()) {
+	case -1:
+		perror("problema con fork");
+
+		exit(EXIT_FAILURE);
+
+	case 0: // processo FIGLIO: leggerà dalla PIPE
+
+		child_process();
+	}
+
+	close(child_pipe_fd[1]);
+
+	write(parent_pipe_fd[1], &buf, sizeof(int));
+
+	int byteRead;
+
+	while (1) {
+
+		byteRead = read(child_pipe_fd[0], &buf, sizeof(int));
+		if (byteRead == -1) {
+			perror("errore in read");
+			exit(EXIT_FAILURE);
+		}
+		if (buf > MAX_VALUE - 1) {
+			printf("Finished! value = %d\n", buf);
+			write(parent_pipe_fd[1], &buf, sizeof(int));
+			exit(EXIT_SUCCESS);
+		}
+		buf++;
+		write(parent_pipe_fd[1], &buf, sizeof(int));
+	}
 }
